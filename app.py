@@ -8,7 +8,7 @@ from transformers import pipeline
 # ---------------------------
 # Configuration
 # ---------------------------
-NEWSAPI_KEY = "YOUR_NEWSAPI_KEY"  # replace with your key
+NEWSAPI_KEY = "3087034a13564f75bfc769c0046e729c"  # replace with your key
 NEWSAPI_URL = "https://newsapi.org/v2/everything"
 
 # ---------------------------
