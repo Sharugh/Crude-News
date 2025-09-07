@@ -6,4 +6,4 @@ torch
 torchvision
 torchaudio
 transformers
-reportlab
+fpdf
