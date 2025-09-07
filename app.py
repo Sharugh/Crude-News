@@ -1,14 +1,20 @@
 import streamlit as st
 import requests
+import pandas as pd
 from datetime import datetime, timedelta
+from io import BytesIO
 
 # -------------------------------
-# Streamlit App Title
+# Config
 # -------------------------------
+st.set_page_config(page_title="Crude Oil News Explorer", layout="wide")
 st.title("📰 Crude Oil News Explorer")
 
+API_KEY = "3087034a13564f75bfc769c0046e729c"  # 🔑 Replace with your NewsAPI key
+NEWSAPI_URL = "https://newsapi.org/v2/everything"
+
 # -------------------------------
-# Date Range Selection (within last 30 days)
+# Timeline (last 30 days)
 # -------------------------------
 today = datetime.today()
 default_start = today - timedelta(days=7)
@@ -33,7 +39,7 @@ if start_date > end_date:
     st.stop()
 
 # -------------------------------
-# Expanded Keywords for Crude Oil News
+# Expanded Crude Oil Keywords
 # -------------------------------
 keywords = [
     "crude oil", "oil prices", "Brent", "WTI", "OPEC", "oil demand", "oil supply", "inventory",
@@ -47,35 +53,60 @@ keywords = [
 query = " OR ".join([f'"{kw}"' for kw in keywords])
 
 # -------------------------------
-# News API Call
+# Fetch Articles
 # -------------------------------
-API_KEY = "3087034a13564f75bfc769c0046e729c"  # 🔑 Replace with your NewsAPI key
-url = (
-    f"https://newsapi.org/v2/everything?"
-    f"q={query}&"
-    f"from={start_date}&"
-    f"to={end_date}&"
-    f"sortBy=publishedAt&"
-    f"language=en&"
-    f"apiKey={API_KEY}"
-)
+def fetch_articles(query, start_date, end_date):
+    params = {
+        "q": query,
+        "from": start_date.strftime("%Y-%m-%d"),
+        "to": end_date.strftime("%Y-%m-%d"),
+        "sortBy": "publishedAt",
+        "language": "en",
+        "pageSize": 100,
+        "apiKey": API_KEY
+    }
+    try:
+        response = requests.get(NEWSAPI_URL, params=params)
+        if response.status_code != 200:
+            st.error(f"❌ Failed to fetch news: {response.status_code} - {response.text}")
+            return []
+        articles = response.json().get("articles", [])
+        return [
+            {
+                "Title": a.get("title"),
+                "Description": a.get("description"),
+                "Published At": a.get("publishedAt"),
+                "Source": a.get("source", {}).get("name"),
+                "URL": a.get("url")
+            }
+            for a in articles
+        ]
+    except Exception as e:
+        st.error(f"⚠️ API request failed: {e}")
+        return []
 
-response = requests.get(url)
+# -------------------------------
+# Fetch and Display Button
+# -------------------------------
+if st.button("🔍 Fetch Crude Oil News"):
+    articles = fetch_articles(query, start_date, end_date)
 
-# -------------------------------
-# Display News Results
-# -------------------------------
-if response.status_code == 200:
-    articles = response.json().get("articles", [])
     if articles:
-        st.subheader(f"🛢️ Crude Oil Related News ({len(articles)} articles found)")
-        for i, article in enumerate(articles, 1):
-            st.markdown(f"**{i}. {article['title']}**")
-            st.write(article["description"] if article["description"] else "No description available.")
-            st.write(f"Source: {article['source']['name']} | Published At: {article['publishedAt']}")
-            st.markdown(f"[Read More]({article['url']})")
-            st.markdown("---")
+        df = pd.DataFrame(articles)
+        st.subheader(f"🛢️ Crude Oil Related News ({len(df)} articles found)")
+        st.dataframe(df)
+
+        # Download as Excel
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False)
+        output.seek(0)
+
+        st.download_button(
+            "📥 Download as Excel",
+            data=output,
+            file_name="crude_oil_news.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
     else:
         st.warning("⚠️ No news articles found for the selected timeline.")
-else:
-    st.error(f"❌ Failed to fetch news: {response.status_code}")
