@@ -10,7 +10,7 @@ from io import BytesIO
 st.set_page_config(page_title="Crude Oil News Explorer", layout="wide")
 st.title("📰 Crude Oil News Explorer")
 
-API_KEY = "YOUR_NEWSAPI_KEY"  # 🔑 Replace with your NewsAPI key
+API_KEY = "3087034a13564f75bfc769c0046e729c"  # 🔑 Replace with your NewsAPI key
 NEWSAPI_URL = "https://newsapi.org/v2/everything"
 
 # -------------------------------
