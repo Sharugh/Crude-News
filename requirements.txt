@@ -1,0 +1,8 @@
+streamlit
+pandas
+requests
+openpyxl
+torch
+torchvision
+torchaudio
+transformers
