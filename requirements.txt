@@ -7,3 +7,9 @@ torchvision
 torchaudio
 transformers
 fpdf
+streamlit
+pandas
+requests
+openpyxl
+fpdf
+nltk
