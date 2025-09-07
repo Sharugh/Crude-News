@@ -1,162 +1,81 @@
 import streamlit as st
 import requests
-import pandas as pd
 from datetime import datetime, timedelta
-from io import BytesIO
-from transformers import pipeline
 
-# Configuration
-NEWSAPI_KEY = "3087034a13564f75bfc769c0046e729c"
-NEWSAPI_URL = "https://newsapi.org/v2/everything"
+# -------------------------------
+# Streamlit App Title
+# -------------------------------
+st.title("📰 Crude Oil News Explorer")
 
-# Benchmarks & Crude-Related Keywords
-SEARCH_TERMS = [
-    # Benchmarks
-    "Gasoline 92 RON Unl MOP West India $/bbl",
-    "Gasoline 95 RON Unl MOP West India $/bbl",
-    "Gasoil .25% (2500ppm) MOP West India $/bbl",
-    "Gasoil .001% (10ppm) MOP West India $/bbl",
-    "Gasoil .05% (500ppm) MOP West India $/bbl",
-    "Marine Gasoil 0.5% Dlvd Mumbai",
-    "Marine Gasoil 0.1% Dlvd Mumbai",
-    "Marine Gasoil 1.5% Dlvd Mumbai",
-    "Naphtha MOP West India $/bbl",
-    "Jet Kero MOP West India $/bbl",
-    "Marine Fuel 0.5% Bunker Dlvd Mumbai",
-    "Bunker FO 380 CST Dlvd Mumbai",
-    "Marine Fuel 0.5% Dlvd Kandla",
-    "Dubai Mo01 (NextGen MOC)",
-    "Oman Blend Mo01 (NextGen MOC)",
-    "Dated Brent",
-    "Urals DAP West Coast India",
-    "Basrah Heavy Mo01 at Asia close",
-    # Crude price keywords
-    "crude oil price",
-    "oil demand",
-    "oil supply",
-    "OPEC",
-    "tariffs",
-    "sanctions",
-    "geopolitical risk",
-    "energy policy",
-    "oil price volatility",
-    "global oil market",
-    "Middle East tensions",
-    "US shale oil",
-    "India crude imports",
-    "China oil demand"
+# -------------------------------
+# Date Range Selection (within last 30 days)
+# -------------------------------
+today = datetime.today()
+default_start = today - timedelta(days=7)
+min_date = today - timedelta(days=30)
+
+start_date = st.date_input(
+    "Start Date",
+    value=default_start,
+    min_value=min_date,
+    max_value=today
+)
+
+end_date = st.date_input(
+    "End Date",
+    value=today,
+    min_value=min_date,
+    max_value=today
+)
+
+if start_date > end_date:
+    st.error("⚠️ Start date must be before End date")
+    st.stop()
+
+# -------------------------------
+# Expanded Keywords for Crude Oil News
+# -------------------------------
+keywords = [
+    "crude oil", "oil prices", "Brent", "WTI", "OPEC", "oil demand", "oil supply", "inventory",
+    "sanctions", "tariffs", "Middle East tensions", "production cuts", "US shale", "rig count",
+    "refinery outages", "pipeline disruption", "inflation", "dollar index", "Fed policy",
+    "shipping disruptions", "geopolitical risks", "war", "conflict", "strikes", "embargo",
+    "price cap", "imports", "exports", "demand slowdown", "energy policy", "fossil fuels",
+    "fuel subsidies", "energy security", "global oil markets", "IEA report", "EIA report"
 ]
 
-# Summarizer model (cached)
-@st.cache_resource
-def load_summarizer():
-    return pipeline("summarization", model="facebook/bart-large-cnn")
+query = " OR ".join([f'"{kw}"' for kw in keywords])
 
-summarizer = load_summarizer()
+# -------------------------------
+# News API Call
+# -------------------------------
+API_KEY = "3087034a13564f75bfc769c0046e729c"  # 🔑 Replace with your NewsAPI key
+url = (
+    f"https://newsapi.org/v2/everything?"
+    f"q={query}&"
+    f"from={start_date}&"
+    f"to={end_date}&"
+    f"sortBy=publishedAt&"
+    f"language=en&"
+    f"apiKey={API_KEY}"
+)
 
-def format_query(query):
-    return " ".join(query.strip().split())[:200]
+response = requests.get(url)
 
-def fetch_articles(search_query, start_date, end_date):
-    params = {
-        "q": search_query,
-        "from": start_date,
-        "to": end_date,
-        "apiKey": NEWSAPI_KEY,
-        "language": "en",
-        "pageSize": 100
-    }
-    try:
-        response = requests.get(NEWSAPI_URL, params=params)
-        if response.status_code != 200:
-            return []
-        articles = response.json().get("articles", [])
-        return [
-            {
-                "Title": a.get("title"),
-                "Description": a.get("description"),
-                "Published At": a.get("publishedAt"),
-                "Source": a.get("source", {}).get("name"),
-                "URL": a.get("url")
-            } for a in articles
-        ]
-    except:
-        return []
-
-def add_summaries(articles):
-    for a in articles:
-        text = a.get("Description") or a.get("Title")
-        if not text:
-            summary = "No content available."
-        else:
-            try:
-                summary = summarizer(
-                    text, max_length=60, min_length=15, do_sample=False
-                )[0]["summary_text"]
-            except:
-                summary = "Summarization failed."
-        a["Summary"] = summary
-        if a["Published At"]:
-            try:
-                a["Published At"] = datetime.fromisoformat(
-                    a["Published At"].replace("Z", "")
-                ).strftime("%d-%m-%Y")
-            except:
-                pass
-    return articles
-
-def display_articles(df):
-    if df.empty:
-        st.warning("No articles found in the last 30 days.")
-        return
-
-    st.write("### 📰 Crude & Refined Products News (Last 30 Days)")
-    st.dataframe(df)
-
-    # Excel Export
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, sheet_name="Articles", index=False)
-    output.seek(0)
-    st.download_button(
-        "Download as Excel",
-        data=output,
-        file_name="crude_news_with_summaries.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-
-# Main App
-def main():
-    st.set_page_config(page_title="Crude Price & Benchmarks News", layout="wide")
-    st.title("🛢️ Crude Price & Benchmarks News Dashboard")
-
-    st.sidebar.header("ℹ️ Info")
-    st.sidebar.write("This dashboard collects crude oil & refined product benchmark news with key crude price keywords for the last 30 days.")
-
-    # Define last 30 days
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=30)
-
-    if st.sidebar.button("Fetch News"):
-        all_articles = []
-        for term in SEARCH_TERMS:
-            formatted_query = format_query(term)
-            data = fetch_articles(
-                formatted_query,
-                start_date.strftime("%Y-%m-%d"),
-                end_date.strftime("%Y-%m-%d")
-            )
-            all_articles.extend(data)
-
-        # Deduplicate by Title + URL
-        df = pd.DataFrame(all_articles).drop_duplicates(subset=["Title", "URL"])
-
-        # Add summaries
-        if not df.empty:
-            articles_with_summary = add_summaries(df.to_dict("records"))
-            df = pd.DataFrame(articles_with_summary)
-
-        display_articles(df)
-
-if __name__ == "__main__":
-    main()
+# -------------------------------
+# Display News Results
+# -------------------------------
+if response.status_code == 200:
+    articles = response.json().get("articles", [])
+    if articles:
+        st.subheader(f"🛢️ Crude Oil Related News ({len(articles)} articles found)")
+        for i, article in enumerate(articles, 1):
+            st.markdown(f"**{i}. {article['title']}**")
+            st.write(article["description"] if article["description"] else "No description available.")
+            st.write(f"Source: {article['source']['name']} | Published At: {article['publishedAt']}")
+            st.markdown(f"[Read More]({article['url']})")
+            st.markdown("---")
+    else:
+        st.warning("⚠️ No news articles found for the selected timeline.")
+else:
+    st.error(f"❌ Failed to fetch news: {response.status_code}")
