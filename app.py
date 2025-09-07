@@ -9,8 +9,9 @@ from transformers import pipeline
 NEWSAPI_KEY = "3087034a13564f75bfc769c0046e729c"
 NEWSAPI_URL = "https://newsapi.org/v2/everything"
 
-# Benchmarks List
-BENCHMARKS = [
+# Benchmarks & Crude-Related Keywords
+SEARCH_TERMS = [
+    # Benchmarks
     "Gasoline 92 RON Unl MOP West India $/bbl",
     "Gasoline 95 RON Unl MOP West India $/bbl",
     "Gasoil .25% (2500ppm) MOP West India $/bbl",
@@ -28,7 +29,22 @@ BENCHMARKS = [
     "Oman Blend Mo01 (NextGen MOC)",
     "Dated Brent",
     "Urals DAP West Coast India",
-    "Basrah Heavy Mo01 at Asia close"
+    "Basrah Heavy Mo01 at Asia close",
+    # Crude price keywords
+    "crude oil price",
+    "oil demand",
+    "oil supply",
+    "OPEC",
+    "tariffs",
+    "sanctions",
+    "geopolitical risk",
+    "energy policy",
+    "oil price volatility",
+    "global oil market",
+    "Middle East tensions",
+    "US shale oil",
+    "India crude imports",
+    "China oil demand"
 ]
 
 # Summarizer model (cached)
@@ -53,7 +69,6 @@ def fetch_articles(search_query, start_date, end_date):
     try:
         response = requests.get(NEWSAPI_URL, params=params)
         if response.status_code != 200:
-            st.error(f"Failed to fetch news. {response.status_code}: {response.text}")
             return []
         articles = response.json().get("articles", [])
         return [
@@ -65,8 +80,7 @@ def fetch_articles(search_query, start_date, end_date):
                 "URL": a.get("url")
             } for a in articles
         ]
-    except Exception as e:
-        st.error(f"API request failed: {e}")
+    except:
         return []
 
 def add_summaries(articles):
@@ -79,7 +93,7 @@ def add_summaries(articles):
                 summary = summarizer(
                     text, max_length=60, min_length=15, do_sample=False
                 )[0]["summary_text"]
-            except Exception:
+            except:
                 summary = "Summarization failed."
         a["Summary"] = summary
         if a["Published At"]:
@@ -91,19 +105,15 @@ def add_summaries(articles):
                 pass
     return articles
 
-def display_articles(data, query):
-    if not data:
-        st.warning("No articles found.")
+def display_articles(df):
+    if df.empty:
+        st.warning("No articles found in the last 30 days.")
         return
 
-    # Add summaries
-    data = add_summaries(data)
-
-    df = pd.DataFrame(data)
-    st.write(f"### News for '{query}' (Last 30 Days)")
+    st.write("### 📰 Crude & Refined Products News (Last 30 Days)")
     st.dataframe(df)
 
-    # Excel Export (one sheet with summary column)
+    # Excel Export
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df.to_excel(writer, sheet_name="Articles", index=False)
@@ -111,30 +121,42 @@ def display_articles(data, query):
     st.download_button(
         "Download as Excel",
         data=output,
-        file_name="news_articles_with_summaries.xlsx",
+        file_name="crude_news_with_summaries.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
 # Main App
 def main():
-    st.set_page_config(page_title="Energy Benchmarks News Dashboard", layout="wide")
-    st.title("📰 Crude & Refined Products News Collector")
+    st.set_page_config(page_title="Crude Price & Benchmarks News", layout="wide")
+    st.title("🛢️ Crude Price & Benchmarks News Dashboard")
 
-    st.sidebar.header("🔍 Search Filters")
-    benchmark = st.sidebar.selectbox("Select Benchmark", BENCHMARKS)
+    st.sidebar.header("ℹ️ Info")
+    st.sidebar.write("This dashboard collects crude oil & refined product benchmark news with key crude price keywords for the last 30 days.")
 
-    # Auto set past 30 days
+    # Define last 30 days
     end_date = datetime.now()
     start_date = end_date - timedelta(days=30)
 
     if st.sidebar.button("Fetch News"):
-        formatted_query = format_query(benchmark)
-        data = fetch_articles(
-            formatted_query,
-            start_date.strftime("%Y-%m-%d"),
-            end_date.strftime("%Y-%m-%d")
-        )
-        display_articles(data, formatted_query)
+        all_articles = []
+        for term in SEARCH_TERMS:
+            formatted_query = format_query(term)
+            data = fetch_articles(
+                formatted_query,
+                start_date.strftime("%Y-%m-%d"),
+                end_date.strftime("%Y-%m-%d")
+            )
+            all_articles.extend(data)
+
+        # Deduplicate by Title + URL
+        df = pd.DataFrame(all_articles).drop_duplicates(subset=["Title", "URL"])
+
+        # Add summaries
+        if not df.empty:
+            articles_with_summary = add_summaries(df.to_dict("records"))
+            df = pd.DataFrame(articles_with_summary)
+
+        display_articles(df)
 
 if __name__ == "__main__":
     main()
