@@ -4,55 +4,71 @@ import requests
 import pandas as pd
 from datetime import datetime, timedelta
 from io import BytesIO
-from transformers import pipeline
-from fpdf import FPDF
 import urllib.parse
 import time
+import zipfile
+from fpdf import FPDF
+import math
+import re
+from collections import Counter, defaultdict
+
+# lightweight NLP
+import nltk
+from nltk.corpus import stopwords
+from nltk.tokenize import sent_tokenize, word_tokenize
+from nltk.sentiment import SentimentIntensityAnalyzer
 
 # ---------------------------
-# Config
+# Ensure NLTK data is present (first-run will download)
 # ---------------------------
-NEWSAPI_KEY = "3087034a13564f75bfc769c0046e729c"   
+nltk_packages = ["punkt", "stopwords", "vader_lexicon"]
+for pkg in nltk_packages:
+    try:
+        nltk.data.find(pkg if pkg != "vader_lexicon" else "sentiment/vader_lexicon")
+    except Exception:
+        nltk.download(pkg)
+
+# ---------------------------
+# CONFIG
+# ---------------------------
+st.set_page_config(page_title="Crude Oil News Research (Fast Summaries)", layout="wide")
+st.title("🛢️ Crude Oil News Research — Fast Global Summary & Report")
+
+NEWSAPI_KEY = "3087034a13564f75bfc769c0046e729c"  # <-- Replace with your NewsAPI key
 NEWSAPI_URL = "https://newsapi.org/v2/everything"
 
-st.set_page_config(page_title="Crude Oil Price News & Research", layout="wide")
-st.title("🛢️ Crude Oil Price News & Research Dashboard")
-
 # ---------------------------
-# Keyword set (ultra-precise)
+# ULTRA-PRECISE KEYWORDS (safe groups will be built)
 # ---------------------------
 KEYWORDS = [
     # Benchmarks & grades
     "Brent crude", "WTI crude", "Dated Brent", "Urals crude", "Dubai crude", "Oman crude",
-    "Basrah Heavy", "ESPO crude", "Murban", "Bonny Light", "Mexican Maya", "Forties",
+    "Basrah Heavy", "ESPO", "Murban", "Bonny Light", "Mexican Maya", "Forties",
 
     # Pricing & instruments
-    "crude oil price", "oil price", "ICE Brent futures", "NYMEX WTI futures",
-    "oil spot price", "oil futures", "forward curve", "crude spreads", "crude differential",
+    "crude oil price", "oil price", "ICE Brent futures", "NYMEX WTI", "oil futures",
+    "oil spot price", "forward curve", "crude spreads", "crude differential",
 
-    # Data providers & assessments
-    "Platts assessment", "Argus assessment", "S&P Global Platts", "Argus Media",
+    # Providers & reports
+    "Platts", "Argus", "S&P Global Platts", "IEA oil report", "EIA weekly", "OPEC monthly",
 
     # Supply/demand & drivers
-    "OPEC", "OPEC+", "production cuts", "output cuts", "supply disruption", "supply shock",
-    "oil inventories", "EIA crude inventory", "API crude", "IEA oil report", "OPEC monthly",
+    "OPEC", "OPEC+", "production cuts", "output cuts", "supply disruption",
+    "oil inventories", "API crude", "US SPR release", "strategic petroleum reserve",
 
-    # Trade flows & policy affecting prices
-    "China crude imports", "India crude imports", "US crude exports", "EU oil sanctions",
-    "oil embargo", "oil sanctions Russia", "US SPR release", "strategic petroleum reserve",
+    # Trade & consumption
+    "China crude imports", "India crude imports", "US crude exports",
 
-    # Refining & margin indicators
-    "refinery outage", "refinery margins", "crack spread", "refining demand",
+    # Refining & shipping
+    "refinery outage", "refinery margins", "crack spread", "floating storage",
+    "tanker rates", "voyage charter rates",
 
-    # Shipping / logistics that move price
-    "floating storage", "tanker rates", "voyage charter rates", "Suez Canal disruption",
-
-    # Market sentiment / volatility
-    "price volatility", "contango", "backwardation", "market premium"
+    # Market structure
+    "contango", "backwardation", "price volatility", "benchmark"
 ]
 
 # ---------------------------
-# Utilities: split keywords into safe query groups
+# Helpers: split keywords into safe query groups (< 480 chars)
 # ---------------------------
 def build_keyword_groups(keywords, max_chars=480):
     groups = []
@@ -61,32 +77,20 @@ def build_keyword_groups(keywords, max_chars=480):
     for kw in keywords:
         piece = f'"{kw}" OR '
         if cur_len + len(piece) > max_chars and cur:
-            groups.append(" OR ".join([f'"{k}"' for k in cur]))
+            groups.append(" OR ".join([f'"{k}"' for k in cur]).rstrip(" OR"))
             cur = [kw]
             cur_len = len(piece)
         else:
             cur.append(kw)
             cur_len += len(piece)
     if cur:
-        groups.append(" OR ".join([f'"{k}"' for k in cur]))
-    # final safety: strip any trailing OR
-    groups = [g.rstrip().rstrip("OR ").strip() for g in groups]
+        groups.append(" OR ".join([f'"{k}"' for k in cur]).rstrip(" OR"))
+    # final safety: strip trailing OR / spaces
+    groups = [g.strip().rstrip("OR").strip() for g in groups]
     return groups
 
 # ---------------------------
-# Load Hugging Face models (cached)
-# ---------------------------
-@st.cache_resource
-def load_models():
-    summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
-    sentiment = pipeline("sentiment-analysis")
-    return summarizer, sentiment
-
-with st.spinner("Loading summarizer & sentiment models (first run will download models)..."):
-    summarizer, sentiment_analyzer = load_models()
-
-# ---------------------------
-# Helper: call NewsAPI for one query
+# NewsAPI fetch (single query)
 # ---------------------------
 def fetch_articles_for_query(query, from_date_str, to_date_str, page_size=100):
     params = {
@@ -99,7 +103,7 @@ def fetch_articles_for_query(query, from_date_str, to_date_str, page_size=100):
         "apiKey": NEWSAPI_KEY
     }
     try:
-        r = requests.get(NEWSAPI_URL, params=params, timeout=30)
+        r = requests.get(NEWSAPI_URL, params=params, timeout=20)
     except Exception as e:
         st.error(f"Network/API error when calling NewsAPI: {e}")
         return []
@@ -107,61 +111,116 @@ def fetch_articles_for_query(query, from_date_str, to_date_str, page_size=100):
         st.error(f"Failed to fetch: {r.status_code} - {r.text}")
         return []
     try:
-        articles = r.json().get("articles", [])
+        resp = r.json()
     except Exception:
-        st.error("Failed to parse NewsAPI response.")
+        st.error("Failed to parse NewsAPI JSON response.")
         return []
-    results = []
+    articles = resp.get("articles", []) or []
+    rows = []
     for a in articles:
-        results.append({
+        rows.append({
             "Title": a.get("title"),
             "Description": a.get("description"),
             "Published At": a.get("publishedAt"),
             "Source": a.get("source", {}).get("name"),
             "URL": a.get("url")
         })
-    return results
+    return rows
 
 # ---------------------------
-# Summarize & sentiment helpers
+# Text cleaning & sentence scoring summarizer (fast, extractive)
 # ---------------------------
-def summarize_descriptions(descriptions, max_articles=30):
-    if not descriptions:
-        return "No descriptions to summarize."
-    # join top descriptions but keep it reasonable
-    joined = " ".join(descriptions[:max_articles])
-    # summarizer expects reasonably sized input; pass directly
-    try:
-        s = summarizer(joined, max_length=250, min_length=60, do_sample=False)[0]["summary_text"]
-    except Exception as e:
-        s = f"Summarization failed: {e}"
-    return s
+STOPWORDS = set(stopwords.words("english"))
 
-def analyze_sentiment(descriptions, max_articles=30):
-    if not descriptions:
-        return {"positive":0, "negative":0, "neutral":0, "overall":"NEUTRAL"}
-    batch = descriptions[:max_articles]
-    try:
-        results = sentiment_analyzer(batch)
-    except Exception as e:
-        return {"positive":0, "negative":0, "neutral":0, "overall":f"error: {e}"}
+def clean_text(text):
+    if not text:
+        return ""
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+def score_sentences_by_tf(text, top_n=6):
+    """
+    Very lightweight extractive summarizer:
+      - tokenize sentences
+      - compute word frequency (term frequency)
+      - score sentences by sum(freq of words in sentence)
+      - return top_n sentences in the original order
+    """
+    if not text:
+        return ""
+
+    # Split into sentences
+    sentences = sent_tokenize(text)
+    if len(sentences) <= top_n:
+        return " ".join([s.strip() for s in sentences])
+
+    # Build frequency table
+    freq = Counter()
+    for sent in sentences:
+        for w in word_tokenize(sent.lower()):
+            w = re.sub(r'[^a-z0-9\-]', '', w)
+            if not w or w.isnumeric() or w in STOPWORDS:
+                continue
+            freq[w] += 1
+
+    if not freq:
+        # fallback: return first few sentences
+        return " ".join(sentences[:top_n])
+
+    # Normalize frequencies
+    max_freq = max(freq.values())
+    for k in list(freq.keys()):
+        freq[k] = freq[k] / max_freq
+
+    # Score sentences
+    sent_scores = {}
+    for i, sent in enumerate(sentences):
+        score = 0.0
+        for w in word_tokenize(sent.lower()):
+            w = re.sub(r'[^a-z0-9\-]', '', w)
+            if w in freq:
+                score += freq[w]
+        # Penalize extremely short sentences
+        sent_scores[i] = score * (len(sent.split())**0.5)
+
+    # select top_n sentence indices
+    top_idx = sorted(sent_scores, key=sent_scores.get, reverse=True)[:top_n]
+    top_idx_sorted = sorted(top_idx)
+    summary = " ".join([sentences[i].strip() for i in top_idx_sorted])
+    return summary
+
+# ---------------------------
+# Sentiment: NLTK VADER (fast)
+# ---------------------------
+sia = SentimentIntensityAnalyzer()
+
+def overall_sentiment(descriptions):
+    """
+    descriptions: list of strings
+    returns counts and overall label
+    """
     pos = neg = neu = 0
-    for r in results:
-        # HF sentiment labels often "POSITIVE"/"NEGATIVE"
-        lbl = r.get("label","").upper()
-        if "POS" in lbl:
+    for d in descriptions:
+        if not d or not d.strip():
+            continue
+        sc = sia.polarity_scores(d)
+        comp = sc["compound"]
+        if comp >= 0.05:
             pos += 1
-        elif "NEG" in lbl:
+        elif comp <= -0.05:
             neg += 1
         else:
             neu += 1
-    overall = "BULLISH" if pos>neg else ("BEARISH" if neg>pos else "NEUTRAL")
-    return {"positive":pos, "negative":neg, "neutral":neu, "overall":overall}
+    total = pos + neg + neu
+    if total == 0:
+        return {"positive":0,"negative":0,"neutral":0,"overall":"NEUTRAL"}
+    overall = "BULLISH" if pos > neg else ("BEARISH" if neg > pos else "NEUTRAL")
+    return {"positive":pos,"negative":neg,"neutral":neu,"overall":overall}
 
 # ---------------------------
-# PDF builder (executive summary)
+# PDF builder
 # ---------------------------
-def build_executive_pdf(summary_text, sentiment_summary, top_headlines, filename="executive_summary.pdf"):
+def build_executive_pdf(period_from, period_to, summary_text, sentiment_summary, top_headlines, key_drivers, filename="executive_summary.pdf"):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=12)
     pdf.add_page()
@@ -186,175 +245,158 @@ def build_executive_pdf(summary_text, sentiment_summary, top_headlines, filename
     pdf.multi_cell(0, 6, f"Overall Market Sentiment: {sentiment_summary['overall']}")
     pdf.ln(6)
 
+    if key_drivers:
+        pdf.set_font("Arial", "B", 12)
+        pdf.cell(0, 6, "Key Drivers (top terms):", ln=True)
+        pdf.set_font("Arial", "", 11)
+        pdf.multi_cell(0, 6, ", ".join(key_drivers[:20]))
+        pdf.ln(6)
+
     pdf.set_font("Arial", "B", 12)
-    pdf.cell(0, 6, "Top Headlines (by recency):", ln=True)
+    pdf.cell(0, 6, "Top Headlines:", ln=True)
     pdf.set_font("Arial", "", 11)
-    for i, h in enumerate(top_headlines[:10], 1):
+    for i, h in enumerate(top_headlines[:12], 1):
         pdf.multi_cell(0, 6, f"{i}. {h}")
     pdf.output(filename)
     return filename
 
 # ---------------------------
-# Tagging helper (match which KEYWORD matched article)
+# Tagging helper (optional)
 # ---------------------------
 def tag_article(title, description, keywords):
-    text = " ".join([str(title or ""), str(description or "")]).lower()
+    text = f"{title or ''} {description or ''}".lower()
     matched = [kw for kw in keywords if kw.lower() in text]
     return "; ".join(matched) if matched else ""
 
 # ---------------------------
-# UI: timeline selection & controls
+# UI - Controls
 # ---------------------------
-st.sidebar.header("1) Select timeline")
-timeline = st.sidebar.selectbox("Timeline range", ["Last 7 Days", "Last 14 Days", "Last 30 Days", "Last 60 Days"])
+st.sidebar.header("Options")
+timeline = st.sidebar.selectbox("Select timeline", ["Last 7 Days", "Last 14 Days", "Last 30 Days", "Last 60 Days"])
 days_map = {"Last 7 Days":7, "Last 14 Days":14, "Last 30 Days":30, "Last 60 Days":60}
 days = days_map[timeline]
+
 period_to = datetime.utcnow().date()
 period_from = (datetime.utcnow() - timedelta(days=days)).date()
 
-st.sidebar.markdown(f"**Fetching articles from:** {period_from} → {period_to}")
+st.sidebar.write(f"Fetching from **{period_from}** to **{period_to}**")
 
-st.sidebar.header("2) Options")
-use_relevancy = st.sidebar.checkbox("Sort API queries by relevancy", value=True)
-page_size = st.sidebar.slider("NewsAPI page size (per query)", 10, 100, 100, step=10)
+page_size = st.sidebar.slider("NewsAPI page size (per query)", min_value=20, max_value=100, value=100, step=10)
+max_summary_sentences = st.sidebar.slider("Summary sentences (global)", 3, 8, 5)
 
-if st.sidebar.button("🔎 Fetch & Analyze News"):
-    start_time = time.time()
-    st.info("Building keyword groups & fetching news...")
-
-    groups = build_keyword_groups(KEYWORDS, max_chars=480)
-    st.write(f"• Using {len(groups)} keyword group(s) to keep queries safe (NewsAPI limit).")
-
-    all_articles = []
-    progress = st.progress(0)
-    total = len(groups)
-    for idx, g in enumerate(groups):
-        # ensure we pass raw string (requests will encode)
-        query = g
-        from_str = period_from.strftime("%Y-%m-%d")
-        to_str = period_to.strftime("%Y-%m-%d")
-        articles = fetch_articles_for_query(query, from_str, to_str, page_size=page_size)
-        all_articles.extend(articles)
-        progress.progress(int((idx+1)/total * 100))
-        time.sleep(0.2)  # small pause to be gentle on API
-
-    if not all_articles:
-        st.warning("No articles found for the selected period and keywords.")
+if st.sidebar.button("Fetch & Build Report"):
+    if NEWSAPI_KEY == "YOUR_NEWSAPI_KEY" or not NEWSAPI_KEY:
+        st.error("Please set your NewsAPI key in NEWSAPI_KEY variable inside the script.")
     else:
-        # dedupe
-        df = pd.DataFrame(all_articles)
-        df = df.drop_duplicates(subset=["Title", "URL"])
-        # format published date
-        def fmt_date(x):
-            try:
-                return datetime.fromisoformat(x.replace("Z","")).strftime("%d-%m-%Y %H:%M:%S")
-            except:
-                return x
-        df["Published At"] = df["Published At"].apply(fmt_date)
+        start = time.time()
+        st.info("Building keyword groups (to avoid NewsAPI query length limit)...")
+        groups = build_keyword_groups(KEYWORDS, max_chars=480)
+        st.write(f"Using {len(groups)} keyword group(s).")
 
-        # tag and sentiment per article (we do lightweight sentiment on descriptions)
-        st.info("Tagging and running per-article sentiment (light).")
-        summaries = []
-        sentiments = []
-        tags = []
-        descriptions_list = []
-        for _, row in df.iterrows():
-            desc = row["Description"] if row["Description"] else ""
-            descriptions_list.append(desc)
-            # per-article sentiment (short)
-            if desc:
-                try:
-                    sres = sentiment_analyzer(desc[:512])[0]
-                    sentiments.append(sres.get("label"))
-                except:
-                    sentiments.append("UNKNOWN")
-            else:
-                sentiments.append("NO_DESC")
-            # tags
-            tags.append(tag_article(row["Title"], row["Description"], KEYWORDS))
+        all_articles = []
+        p = st.progress(0)
+        for i, g in enumerate(groups):
+            from_str = period_from.strftime("%Y-%m-%d")
+            to_str = period_to.strftime("%Y-%m-%d")
+            # query is raw; requests will encode appropriately
+            articles = fetch_articles_for_query(g, from_str, to_str, page_size=page_size)
+            all_articles.extend(articles)
+            p.progress((i+1)/len(groups))
+            time.sleep(0.15)
 
-        df["Sentiment"] = sentiments
-        df["Tags"] = tags
-
-        # Global summarization & sentiment summary
-        st.info("Building combined summary and sentiment snapshot...")
-        combined_summary = summarize_descriptions([d for d in descriptions_list if d], max_articles=30)
-        sentiment_snapshot = analyze_sentiment([d for d in descriptions_list if d], max_articles=30)
-
-        # Add one summary column per article by summarizing description (lighter)
-        st.info("Generating short summaries for each article (may take some time)...")
-        article_summaries = []
-        # We'll try to summarize each description but keep it short and limited
-        for desc in descriptions_list:
-            if not desc:
-                article_summaries.append("")
-                continue
-            try:
-                s = summarizer(desc, max_length=50, min_length=10, do_sample=False)[0]["summary_text"]
-                article_summaries.append(s)
-            except:
-                article_summaries.append("")
-        df["Summary"] = article_summaries
-
-        # Reorder columns to match requested output: Title | Description | Published At | Source | URL | Summary | Sentiment | Tags
-        out_df = df[["Title", "Description", "Published At", "Source", "URL", "Summary", "Sentiment", "Tags"]]
-
-        st.success(f"Fetched & processed {len(out_df)} unique articles in {int(time.time()-start_time)}s.")
-        st.dataframe(out_df, use_container_width=True)
-
-        # Excel download (same structure)
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            out_df.to_excel(writer, index=False, sheet_name="Articles")
-            # also write a sheet with meta summary
-            meta = pd.DataFrame([{
-                "Period From": str(period_from),
-                "Period To": str(period_to),
-                "Fetched Articles": len(out_df),
-                "Summary (excerpt)": combined_summary[:300],
-                "Sentiment Overall": sentiment_snapshot["overall"],
-                "Sentiment Positive": sentiment_snapshot["positive"],
-                "Sentiment Negative": sentiment_snapshot["negative"],
-                "Sentiment Neutral": sentiment_snapshot["neutral"]
-            }])
-            meta.to_excel(writer, index=False, sheet_name="Meta")
-        output.seek(0)
-        st.download_button(
-            "📥 Download Results as Excel",
-            data=output,
-            file_name=f"crude_oil_news_{period_from}_{period_to}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-
-        # Executive summary PDF
-        st.info("Generating Executive Summary PDF...")
-        top_headlines = out_df["Title"].fillna("").tolist()
-        pdf_name = f"executive_summary_{period_from}_{period_to}.pdf"
-        try:
-            build_executive_pdf(combined_summary, sentiment_snapshot, top_headlines, filename=pdf_name)
-            with open(pdf_name, "rb") as f:
-                st.download_button(
-                    "📄 Download Executive Summary (PDF)",
-                    data=f,
-                    file_name=pdf_name,
-                    mime="application/pdf"
-                )
-        except Exception as e:
-            st.error(f"PDF generation failed: {e}")
-
-        # Futuristic value-adds shown in UI
-        st.markdown("### 🔮 Quick Insights (automated)")
-        st.markdown(f"- **Top summary (auto):** {combined_summary[:400]}{'...' if len(combined_summary)>400 else ''}")
-        st.markdown(f"- **Market sentiment (auto):** {sentiment_snapshot['overall']} (P:{sentiment_snapshot['positive']} / N:{sentiment_snapshot['negative']} / U:{sentiment_snapshot['neutral']})")
-        # simple count of top tags
-        tag_series = out_df["Tags"].str.split("; ").explode().value_counts().dropna()
-        if not tag_series.empty:
-            st.markdown("**Top Mentioned Benchmarks / Topics:**")
-            for t, v in tag_series.head(10).items():
-                if t:
-                    st.write(f"- {t} — {v} mentions")
+        if not all_articles:
+            st.warning("No articles found for the selected period / keywords.")
         else:
-            st.write("- No topic tags matched strongly in headlines/descriptions.")
+            # dedupe by Title + URL
+            df = pd.DataFrame(all_articles).drop_duplicates(subset=["Title","URL"]).reset_index(drop=True)
 
-        st.balloons()
+            # format Published At
+            def fmt_date(x):
+                try:
+                    return datetime.fromisoformat(x.replace("Z","")).strftime("%Y-%m-%d %H:%M:%S")
+                except:
+                    return x
+            df["Published At"] = df["Published At"].apply(lambda x: fmt_date(x) if pd.notna(x) else x)
+
+            # Tags (which keywords matched)
+            df["Tags"] = df.apply(lambda r: tag_article(r["Title"], r["Description"], KEYWORDS), axis=1)
+
+            # Display table (same core columns)
+            out_df = df[["Title","Description","Published At","Source","URL","Tags"]]
+            st.success(f"Fetched {len(out_df)} unique articles.")
+            st.dataframe(out_df, use_container_width=True)
+
+            # Prepare descriptions list (non-empty)
+            descriptions = [clean_text(d) for d in out_df["Description"].fillna("").tolist() if d and d.strip()]
+
+            # Global summary (fast extractor)
+            combined_text = " ".join(descriptions)
+            # Use sentence scoring summarizer
+            global_summary = score_sentences_by_tf(combined_text, top_n=max_summary_sentences)
+
+            # Sentiment summary (VADER)
+            sentiment_summary = overall_sentiment(descriptions)
+
+            # Key drivers: top frequent non-stopwords
+            word_counts = Counter()
+            for d in descriptions:
+                for w in word_tokenize(d.lower()):
+                    w = re.sub(r'[^a-z0-9\-]', '', w)
+                    if not w or w.isnumeric() or w in STOPWORDS:
+                        continue
+                    word_counts[w] += 1
+            top_drivers = [w for w, _ in word_counts.most_common(30)]
+
+            # Write Excel to BytesIO (Articles sheet + Meta sheet)
+            excel_io = BytesIO()
+            with pd.ExcelWriter(excel_io, engine="openpyxl") as writer:
+                out_df.to_excel(writer, index=False, sheet_name="Articles")
+                meta = pd.DataFrame([{
+                    "Period From": str(period_from),
+                    "Period To": str(period_to),
+                    "Fetched Articles": len(out_df),
+                    "Summary (excerpt)": global_summary[:500],
+                    "Sentiment Overall": sentiment_summary["overall"],
+                    "Sentiment Positive": sentiment_summary["positive"],
+                    "Sentiment Negative": sentiment_summary["negative"],
+                    "Sentiment Neutral": sentiment_summary["neutral"]
+                }])
+                meta.to_excel(writer, index=False, sheet_name="Meta")
+            excel_io.seek(0)
+
+            # Build PDF executive summary
+            top_headlines = out_df["Title"].fillna("").tolist()
+            pdf_name = f"executive_summary_{period_from}_{period_to}.pdf"
+            try:
+                build_executive_pdf(str(period_from), str(period_to), global_summary, sentiment_summary, top_headlines, top_drivers, filename=pdf_name)
+            except Exception as e:
+                st.error(f"PDF generation failed: {e}")
+                pdf_name = None
+
+            # Create zip containing excel + pdf (or individual downloads)
+            zip_io = BytesIO()
+            with zipfile.ZipFile(zip_io, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr(f"crude_oil_articles_{period_from}_{period_to}.xlsx", excel_io.getvalue())
+                if pdf_name:
+                    with open(pdf_name, "rb") as f:
+                        zf.writestr(pdf_name, f.read())
+            zip_io.seek(0)
+
+            # Provide downloads
+            st.download_button("📥 Download Excel (Articles + Meta)", data=excel_io, file_name=f"crude_oil_articles_{period_from}_{period_to}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            if pdf_name:
+                with open(pdf_name, "rb") as f:
+                    st.download_button("📄 Download Executive Summary (PDF)", data=f, file_name=pdf_name, mime="application/pdf")
+            st.download_button("🗂️ Download ZIP (Excel + PDF)", data=zip_io, file_name=f"crude_oil_report_{period_from}_{period_to}.zip", mime="application/zip")
+
+            # Quick insights in UI
+            st.markdown("### 🔎 Quick Insights (automated)")
+            st.markdown(f"- **Top-line Summary:** {global_summary}")
+            st.markdown(f"- **Market Sentiment:** {sentiment_summary['overall']} (P:{sentiment_summary['positive']} / N:{sentiment_summary['negative']} / U:{sentiment_summary['neutral']})")
+            if top_drivers:
+                st.markdown("**Top detected drivers (keywords):**")
+                st.write(", ".join(top_drivers[:20]))
+
+            st.balloons()
+            st.success("Report ready!")
 
