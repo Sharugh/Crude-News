@@ -42,12 +42,47 @@ if start_date > end_date:
 # Crude Oil Keywords (split later)
 # -------------------------------
 keywords = [
-    "crude oil", "oil prices", "Brent", "WTI", "OPEC", "oil demand", "oil supply", "inventory",
-    "sanctions", "tariffs", "Middle East tensions", "production cuts", "US shale", "rig count",
-    "refinery outages", "pipeline disruption", "inflation", "dollar index", "Fed policy",
-    "shipping disruptions", "geopolitical risks", "war", "conflict", "strikes", "embargo",
-    "price cap", "imports", "exports", "demand slowdown", "energy policy", "fossil fuels",
-    "fuel subsidies", "energy security", "global oil markets", "IEA report", "EIA report"
+    # Core Benchmarks
+    "crude oil price", "oil price", "Brent crude", "WTI crude", "Dated Brent",
+    "Urals crude", "Dubai crude", "Oman crude", "Basrah Heavy", "ESPO crude",
+    "Murban crude", "Bonny Light crude", "Mexican Maya crude", "Forties crude",
+    "Russian crude price", "Middle East crude benchmarks",
+    
+    # Pricing Terms
+    "ICE Brent futures", "NYMEX WTI futures", "Platts crude assessment", 
+    "Argus crude price", "S&P Global crude benchmarks", "oil futures price",
+    "oil spot price", "forward curve crude oil", "crude oil spreads", 
+    "crude differentials", "crude oil swap", "benchmark oil prices",
+
+    # Market Drivers
+    "OPEC oil prices", "OPEC+ production cuts", "oil output cuts", 
+    "supply disruption crude oil", "oil demand growth", "oil demand slowdown",
+    "refinery demand crude", "refining margins oil", "crack spread oil",
+    "floating storage crude", "oil shipping disruption", "tanker rates crude",
+    "oil inventory build", "oil stock drawdown", "US crude exports",
+    "China crude imports", "India crude imports",
+
+    # Reports & Data
+    "IEA oil market report", "EIA weekly petroleum status report", 
+    "EIA crude inventory", "OPEC monthly oil report", "DOE crude stocks",
+    "API crude stock report", "global oil balances",
+
+    # Policy & Geopolitics
+    "oil sanctions Russia", "EU Russian oil ban", "oil embargo Russia", 
+    "US SPR release", "strategic petroleum reserve release", 
+    "Iran oil sanctions", "Venezuela crude exports",
+    "geopolitical premium oil", "oil price cap Russia",
+
+    # Financial & Economic Links
+    "Fed policy crude oil", "dollar index oil prices", "inflation oil prices",
+    "interest rates oil demand", "recession oil demand"
+    "crude oil price", "Brent crude", "WTI crude", "oil market", "oil prices",
+    "OPEC", "OPEC+", "oil demand", "oil supply", "oil production", "oil output",
+    "oil exports", "oil imports", "refinery output", "refinery shutdown",
+    "geopolitical tensions oil", "oil sanctions", "oil embargo", "Middle East oil",
+    "oil price forecast", "oil price outlook", "oil inventories", "EIA oil report",
+    "IEA oil report", "tariffs on oil", "oil price cap", "oil storage", "oil disruption",
+    "oil market volatility", "oil demand slowdown", "global oil consumption"
 ]
 
 # -------------------------------
