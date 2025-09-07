@@ -10,7 +10,7 @@ from io import BytesIO
 st.set_page_config(page_title="Crude Oil News Explorer", layout="wide")
 st.title("📰 Crude Oil News Explorer")
 
-API_KEY = "3087034a13564f75bfc769c0046e729c"  # 🔑 Replace with your NewsAPI key
+API_KEY = "YOUR_NEWSAPI_KEY"  # 🔑 Replace with your NewsAPI key
 NEWSAPI_URL = "https://newsapi.org/v2/everything"
 
 # -------------------------------
@@ -39,7 +39,7 @@ if start_date > end_date:
     st.stop()
 
 # -------------------------------
-# Expanded Crude Oil Keywords
+# Crude Oil Keywords (split later)
 # -------------------------------
 keywords = [
     "crude oil", "oil prices", "Brent", "WTI", "OPEC", "oil demand", "oil supply", "inventory",
@@ -50,10 +50,8 @@ keywords = [
     "fuel subsidies", "energy security", "global oil markets", "IEA report", "EIA report"
 ]
 
-query = " OR ".join([f'"{kw}"' for kw in keywords])
-
 # -------------------------------
-# Fetch Articles
+# Function: Fetch Articles for one query
 # -------------------------------
 def fetch_articles(query, start_date, end_date):
     params = {
@@ -68,7 +66,7 @@ def fetch_articles(query, start_date, end_date):
     try:
         response = requests.get(NEWSAPI_URL, params=params)
         if response.status_code != 200:
-            st.error(f"❌ Failed to fetch news: {response.status_code} - {response.text}")
+            st.error(f"❌ Failed: {response.status_code} - {response.text}")
             return []
         articles = response.json().get("articles", [])
         return [
@@ -86,17 +84,42 @@ def fetch_articles(query, start_date, end_date):
         return []
 
 # -------------------------------
-# Fetch and Display Button
+# Split keywords into smaller groups (avoid 500 char limit)
+# -------------------------------
+def split_keywords(keywords, max_len=450):
+    groups = []
+    current = []
+    length = 0
+    for kw in keywords:
+        piece = f'"{kw}" OR '
+        if length + len(piece) > max_len:
+            groups.append(" OR ".join([f'"{x}"' for x in current]))
+            current = [kw]
+            length = len(piece)
+        else:
+            current.append(kw)
+            length += len(piece)
+    if current:
+        groups.append(" OR ".join([f'"{x}"' for x in current]))
+    return groups
+
+# -------------------------------
+# Fetch and Display
 # -------------------------------
 if st.button("🔍 Fetch Crude Oil News"):
-    articles = fetch_articles(query, start_date, end_date)
+    keyword_groups = split_keywords(keywords)
+    all_articles = []
 
-    if articles:
-        df = pd.DataFrame(articles)
+    for group in keyword_groups:
+        articles = fetch_articles(group, start_date, end_date)
+        all_articles.extend(articles)
+
+    if all_articles:
+        df = pd.DataFrame(all_articles).drop_duplicates(subset=["Title", "URL"])
         st.subheader(f"🛢️ Crude Oil Related News ({len(df)} articles found)")
         st.dataframe(df)
 
-        # Download as Excel
+        # Download Excel
         output = BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
             df.to_excel(writer, index=False)
