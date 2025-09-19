@@ -1,157 +1,170 @@
 import streamlit as st
-import pandas as pd
 import requests
-import re
-import datetime
+import pandas as pd
+from datetime import datetime, timedelta
 from io import BytesIO
-from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet
 
-# ---------------------------
-# CONFIG
-# ---------------------------
-NEWS_API_KEY = "3087034a13564f75bfc769c0046e729c"
-MAX_SUMMARY_SENTENCES = 5
+# -------------------------------
+# Config
+# -------------------------------
+st.set_page_config(page_title="Crude Oil News Explorer", layout="wide")
+st.title("📰 Crude Oil News Explorer")
 
-# ---------------------------
-# HELPER FUNCTIONS
-# ---------------------------
+API_KEY = "3087034a13564f75bfc769c0046e729c"  # 🔑 Replace with your NewsAPI key
+NEWSAPI_URL = "https://newsapi.org/v2/everything"
 
-def fetch_news(query="crude oil", language="en", page_size=20):
-    """Fetch crude oil related news globally using NewsAPI."""
-    url = (
-        f"https://newsapi.org/v2/everything?q={query}&language={language}"
-        f"&pageSize={page_size}&apiKey={NEWS_API_KEY}"
-    )
-    response = requests.get(url)
-    if response.status_code == 200:
+# -------------------------------
+# Timeline (last 30 days)
+# -------------------------------
+today = datetime.today()
+default_start = today - timedelta(days=7)
+min_date = today - timedelta(days=30)
+
+start_date = st.date_input(
+    "Start Date",
+    value=default_start,
+    min_value=min_date,
+    max_value=today
+)
+
+end_date = st.date_input(
+    "End Date",
+    value=today,
+    min_value=min_date,
+    max_value=today
+)
+
+if start_date > end_date:
+    st.error("⚠️ Start date must be before End date")
+    st.stop()
+
+# -------------------------------
+# Crude Oil Keywords (split later)
+# -------------------------------
+keywords = [
+    # Core Benchmarks
+    "crude oil price", "oil price", "Brent crude", "WTI crude", "Dated Brent",
+    "Urals crude", "Dubai crude", "Oman crude", "Basrah Heavy", "ESPO crude",
+    "Murban crude", "Bonny Light crude", "Mexican Maya crude", "Forties crude",
+    "Russian crude price", "Middle East crude benchmarks",
+    
+    # Pricing Terms
+    "ICE Brent futures", "NYMEX WTI futures", "Platts crude assessment", 
+    "Argus crude price", "S&P Global crude benchmarks", "oil futures price",
+    "oil spot price", "forward curve crude oil", "crude oil spreads", 
+    "crude differentials", "crude oil swap", "benchmark oil prices",
+
+    # Market Drivers
+    "OPEC oil prices", "OPEC+ production cuts", "oil output cuts", 
+    "supply disruption crude oil", "oil demand growth", "oil demand slowdown",
+    "refinery demand crude", "refining margins oil", "crack spread oil",
+    "floating storage crude", "oil shipping disruption", "tanker rates crude",
+    "oil inventory build", "oil stock drawdown", "US crude exports",
+    "China crude imports", "India crude imports",
+
+    # Reports & Data
+    "IEA oil market report", "EIA weekly petroleum status report", 
+    "EIA crude inventory", "OPEC monthly oil report", "DOE crude stocks",
+    "API crude stock report", "global oil balances",
+
+    # Policy & Geopolitics
+    "oil sanctions Russia", "EU Russian oil ban", "oil embargo Russia", 
+    "US SPR release", "strategic petroleum reserve release", 
+    "Iran oil sanctions", "Venezuela crude exports",
+    "geopolitical premium oil", "oil price cap Russia",
+
+    # Financial & Economic Links
+    "Fed policy crude oil", "dollar index oil prices", "inflation oil prices",
+    "interest rates oil demand", "recession oil demand"
+    "crude oil price", "Brent crude", "WTI crude", "oil market", "oil prices",
+    "OPEC", "OPEC+", "oil demand", "oil supply", "oil production", "oil output",
+    "oil exports", "oil imports", "refinery output", "refinery shutdown",
+    "geopolitical tensions oil", "oil sanctions", "oil embargo", "Middle East oil",
+    "oil price forecast", "oil price outlook", "oil inventories", "EIA oil report",
+    "IEA oil report", "tariffs on oil", "oil price cap", "oil storage", "oil disruption",
+    "oil market volatility", "oil demand slowdown", "global oil consumption"
+]
+
+# -------------------------------
+# Function: Fetch Articles for one query
+# -------------------------------
+def fetch_articles(query, start_date, end_date):
+    params = {
+        "q": query,
+        "from": start_date.strftime("%Y-%m-%d"),
+        "to": end_date.strftime("%Y-%m-%d"),
+        "sortBy": "publishedAt",
+        "language": "en",
+        "pageSize": 100,
+        "apiKey": API_KEY
+    }
+    try:
+        response = requests.get(NEWSAPI_URL, params=params)
+        if response.status_code != 200:
+            st.error(f"❌ Failed: {response.status_code} - {response.text}")
+            return []
         articles = response.json().get("articles", [])
         return [
             {
-                "Date": a["publishedAt"][:10] if a["publishedAt"] else "",
-                "Source": a["source"]["name"],
-                "Title": a["title"],
-                "Description": a["description"],
-                "URL": a["url"],
+                "Title": a.get("title"),
+                "Description": a.get("description"),
+                "Published At": a.get("publishedAt"),
+                "Source": a.get("source", {}).get("name"),
+                "URL": a.get("url")
             }
             for a in articles
         ]
-    return []
+    except Exception as e:
+        st.error(f"⚠️ API request failed: {e}")
+        return []
 
+# -------------------------------
+# Split keywords into smaller groups (avoid 500 char limit)
+# -------------------------------
+def split_keywords(keywords, max_len=450):
+    groups = []
+    current = []
+    length = 0
+    for kw in keywords:
+        piece = f'"{kw}" OR '
+        if length + len(piece) > max_len:
+            groups.append(" OR ".join([f'"{x}"' for x in current]))
+            current = [kw]
+            length = len(piece)
+        else:
+            current.append(kw)
+            length += len(piece)
+    if current:
+        groups.append(" OR ".join([f'"{x}"' for x in current]))
+    return groups
 
-def split_sentences(text):
-    """Simple regex-based sentence tokenizer (avoids nltk punkt)."""
-    sentences = re.split(r'(?<=[.!?]) +', text.strip())
-    return [s for s in sentences if len(s) > 20]  # filter short
+# -------------------------------
+# Fetch and Display
+# -------------------------------
+if st.button("🔍 Fetch Crude Oil News"):
+    keyword_groups = split_keywords(keywords)
+    all_articles = []
 
+    for group in keyword_groups:
+        articles = fetch_articles(group, start_date, end_date)
+        all_articles.extend(articles)
 
-def score_sentences(text, top_n=5):
-    """TF scoring for summary sentences."""
-    words = re.findall(r'\w+', text.lower())
-    freqs = {}
-    for w in words:
-        freqs[w] = freqs.get(w, 0) + 1
+    if all_articles:
+        df = pd.DataFrame(all_articles).drop_duplicates(subset=["Title", "URL"])
+        st.subheader(f"🛢️ Crude Oil Related News ({len(df)} articles found)")
+        st.dataframe(df)
 
-    sentences = split_sentences(text)
-    ranking = {}
-    for s in sentences:
-        score = sum(freqs.get(w, 0) for w in s.lower().split())
-        ranking[s] = score
+        # Download Excel
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False)
+        output.seek(0)
 
-    ranked_sentences = sorted(ranking, key=ranking.get, reverse=True)
-    return ranked_sentences[:top_n]
-
-
-def to_excel(df):
-    """Convert dataframe to Excel binary for download."""
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, sheet_name="Crude News", index=False)
-    return output.getvalue()
-
-
-def generate_pdf(summary_text, futuristic_points):
-    """Generate PDF with summaries + futuristic insights."""
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4)
-    styles = getSampleStyleSheet()
-    elements = []
-
-    elements.append(Paragraph("🌍 Global Crude Oil News Summary", styles["Title"]))
-    elements.append(Spacer(1, 12))
-
-    for sent in summary_text:
-        elements.append(Paragraph("• " + sent, styles["Normal"]))
-        elements.append(Spacer(1, 6))
-
-    elements.append(Spacer(1, 20))
-    elements.append(Paragraph("🚀 Futuristic Insights", styles["Heading2"]))
-
-    for fp in futuristic_points:
-        elements.append(Paragraph("• " + fp, styles["Normal"]))
-        elements.append(Spacer(1, 6))
-
-    doc.build(elements)
-    pdf = buffer.getvalue()
-    buffer.close()
-    return pdf
-
-# ---------------------------
-# STREAMLIT APP
-# ---------------------------
-
-st.set_page_config(page_title="Global Crude Oil News", layout="wide")
-
-st.title("🌍 Global Crude Oil News Dashboard")
-st.write("Real-time crude oil related news with summaries, Excel exports, and futuristic insights.")
-
-# Fetch news
-articles = fetch_news()
-
-if not articles:
-    st.error("No news found. Check API key or query.")
-else:
-    df = pd.DataFrame(articles)
-
-    # Show table
-    st.subheader("📰 Latest Crude Oil News")
-    st.dataframe(df, use_container_width=True)
-
-    # Download Excel
-    excel_data = to_excel(df)
-    st.download_button(
-        "📥 Download News as Excel",
-        data=excel_data,
-        file_name="global_crude_news.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-
-    # Combine text for summary
-    combined_text = " ".join(df["Description"].dropna().tolist())
-    if combined_text.strip():
-        summary_sentences = score_sentences(combined_text, top_n=MAX_SUMMARY_SENTENCES)
-
-        st.subheader("📝 Auto-Summary")
-        for s in summary_sentences:
-            st.write("- " + s)
-
-        # Futuristic insights (static + dynamic blend)
-        futuristic_points = [
-            "Increased influence of AI on crude oil demand forecasting 📊",
-            "Geopolitical risks will remain the key driver of crude volatility 🌍",
-            "OPEC+ decisions to have amplified impact due to tightening supply ⛽",
-            "Rising investment in alternative fuels may reduce long-term crude dependency 🔋",
-            "Carbon emission policies will reshape the demand-supply balance 🌱",
-        ]
-
-        # PDF Export
-        pdf_data = generate_pdf(summary_sentences, futuristic_points)
         st.download_button(
-            "📄 Download Summary PDF",
-            data=pdf_data,
-            file_name="crude_news_summary.pdf",
-            mime="application/pdf"
+            "📥 Download as Excel",
+            data=output,
+            file_name="crude_oil_news.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
-        st.warning("Not enough description text to generate summary.")
+        st.warning("⚠️ No news articles found for the selected timeline.")
